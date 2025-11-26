@@ -1,90 +1,112 @@
-import copy, time
+import time
+import copy
+import networkx as nx   # librairie pour faire des graphes
+import matplotlib.pyplot as plt  # librairie pour afficher le graphe
+
 from derivation import *
 from facts import *
 from rule import *
 from context import *
 from dataset import *
 
-def anomaly_Detection(rules, facts, context, negative_rule):
-  k = 0           ## number of derivation
-  start = time.perf_counter()
-  previous_result = []
-  current_result = []
-  while True:
-    k+=1
-    matching_context = []
-    negative_predicates = []
-    #print(len(facts))
-    partition_context = fact_Partition(facts, context)
-    #print("the partition is", [obj.getFacts() for obj in partition_context])
-    #print(partition_context)
-    if len(negative_rule) != 0:
-      partition_negative = partition(facts, negative_rule)
-      combined_facts = generate_combinations(facts, len(facts))
-     # print("combined facts", combined_facts)
-      for rule in negative_rule:
-          for fact_partition in combined_facts:
-              result = derive_method(rule, fact_partition)
-              #print(result)
-              if result is not None:
-                  for item in result:
-                      if 'alert' in item.keys():
-                          print("Alert!!!!! Anomaly Detected.")
-                          print("Anomaly caused due to Rule ID:", rule.getRuleID())
-                          print("Rule Body Predicates:", rule.getRuleBodyPredicates())
-                          end = time.perf_counter()
-                          process_time = end - start
-                          print("Processing time:", process_time)
-                          return
-              else:
-                  negative_predicates.append(rule.getRuleBodyPredicates())
-    else:
-        print("No negative rules found.")
-        end = time.perf_counter()
-        process_time = end - start
-        print("Processing time:", process_time)
-        return
-    for c in context:
-      list_context_conclusion = context_conclusion(c)
-      # putting the values in one list
-      flattened_list = [item for sublist in list_context_conclusion for item in sublist]
-      # print("list of conclusions", list_context_conclusion)
-      for p in negative_predicates:
-          # print("negative Predicate is", p)
-          common_elements = set(flattened_list).intersection(p)
-          if len(common_elements) == 0:
-              continue
-          else:
-             #print("here inside context loop")
-             com = generate_combinations(facts, len(facts))
-             #print("com is", com)
-             for val in com:
-                #print("here inside fact loop")
-                derivation = context_make_derivation(c, val)
-                # print("new fact derived", derivation)
-                if derivation is not None:
-                    if len(derivation) == 0:
-                        continue
+def anomaly_Detection(rules, facts, context, negative_rules):
+    # compteur de dérivations
+    k = 0
+    start = time.perf_counter()
+
+    # listes pour comparer les résultats entre deux tours
+    previous_result = []
+    current_result = []
+
+    # je crée un graphe orienté pour représenter les règles négatives
+    G = nx.DiGraph()
+
+    while True:
+        k += 1
+        negative_predicates = []
+
+        # je découpe les faits selon le contexte
+        partition_context = fact_Partition(facts, context)
+
+        # si on a des règles négatives
+        if len(negative_rules) > 0:
+            combined_facts = generate_combinations(facts, len(facts))
+
+            for rule in negative_rules:
+                # j’ajoute chaque règle comme un nœud dans le graphe
+                G.add_node(rule.getRuleID(), predicates=rule.getRuleBodyPredicates())
+
+                # je teste la règle sur les combinaisons de faits
+                for fact_partition in combined_facts:
+                    result = derive_method(rule, fact_partition)
+
+                    if result is not None:
+                        for item in result:
+                            if 'alert' in item.keys():
+                                print("⚠️ Anomaly Detected!")
+                                print("Rule ID:", rule.getRuleID())
+                                print("Predicates:", rule.getRuleBodyPredicates())
+                                end = time.perf_counter()
+                                print("Processing time:", end - start)
+
+                                # j’affiche le graphe avant de quitter
+                                visualize_negative_rules(G)
+                                return
                     else:
-                        current_result.append(derivation)
+                        # si la règle n’a rien donné, je garde ses prédicats
+                        negative_predicates.append(rule.getRuleBodyPredicates())
+        else:
+            print("Pas de règles négatives.")
+            end = time.perf_counter()
+            print("Processing time:", end - start)
+            visualize_negative_rules(G)
+            return
+
+        # maintenant je regarde le contexte
+        for c in context:
+            conclusions = context_conclusion(c)
+            # j’aplatis la liste des conclusions
+            flat_conclusions = [item for sublist in conclusions for item in sublist]
+
+            for p in negative_predicates:
+                # je cherche les éléments communs entre conclusions et prédicats
+                common = set(flat_conclusions).intersection(p)
+                if len(common) == 0:
+                    continue
                 else:
-                   print("nothing derived")
-                   return
-    #print("current derivation list is", [inner_obj.getFacts() for outer_list in current_result for inner_obj in outer_list])
-    #print("previous derivation list is", [inner_obj.getFacts() for outer_list in previous_result for inner_obj in outer_list])
-    if previous_result is not None and previous_result == current_result:
-      print("No new facts derived")
-      end = time.perf_counter()
-      process_time = end - start
-      print("Processing time:", process_time)
-      return
-    else:
-        previous_result = copy.deepcopy(current_result)
-        for result in current_result:
-            for item in result:
-                facts.add(item)  
-  end = time.perf_counter()
-  process_time = end - start
-  print("Processing time:", process_time)
-  return facts
-  
+                    # je génère des combinaisons de faits
+                    com = generate_combinations(facts, len(facts))
+                    for val in com:
+                        derivation = context_make_derivation(c, val)
+                        if derivation is not None and len(derivation) > 0:
+                            current_result.append(derivation)
+                            # j’ajoute une arête entre le contexte et les prédicats
+                            for pred in p:
+                                G.add_edge(c.getContextID(), pred)
+
+        # si les résultats n’ont pas changé → on arrête
+        if previous_result == current_result:
+            print("Aucun nouveau fait dérivé.")
+            end = time.perf_counter()
+            print("Processing time:", end - start)
+            visualize_negative_rules(G)
+            return
+        else:
+            # sinon je mets à jour et j’ajoute les nouveaux faits
+            previous_result = copy.deepcopy(current_result)
+            for result in current_result:
+                for item in result:
+                    facts.add(item)
+
+
+def visualize_negative_rules(G):
+    """ Fonction pour afficher le graphe des règles négatives """
+    plt.figure(figsize=(8,6))
+    pos = nx.spring_layout(G)
+    nx.draw(G, pos, with_labels=True, node_color="lightblue", edge_color="gray",
+            node_size=2000, font_size=10)
+    labels = nx.get_node_attributes(G, 'predicates')
+    nx.draw_networkx_labels(G, pos, labels={k: str(v) for k,v in labels.items()},
+                            font_color="red")
+    plt.title("Graph des règles négatives")
+    plt.show()
